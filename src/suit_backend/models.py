@@ -1,6 +1,6 @@
-import enum
 import uuid
 from datetime import UTC, datetime
+from enum import StrEnum
 
 from sqlalchemy import (
     Boolean,
@@ -27,24 +27,24 @@ def uuid4_str() -> str:
     return str(uuid.uuid4())
 
 
-class Role(str, enum.Enum):
+class Role(StrEnum):
     ADMIN = "admin"
     STAFF = "staff"
 
 
-class Retention(str, enum.Enum):
+class Retention(StrEnum):
     NONE = "none"
     HOURS_24 = "24h"
     DAYS_7 = "7d"
     KEEP = "keep"
 
 
-class ConversationStatus(str, enum.Enum):
+class ConversationStatus(StrEnum):
     ACTIVE = "active"
     CLOSED = "closed"
 
 
-class MessageMode(str, enum.Enum):
+class MessageMode(StrEnum):
     SIGN = "sign"
     VOICE = "voice"
     TEXT = "text"
