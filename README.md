@@ -8,6 +8,7 @@ SUIT 프론트엔드와 분리해 배포하는 FastAPI 백엔드입니다. 병�
 SUIT_BE/
 ├─ 01_API/                 API 목록과 프론트 연동 규격
 ├─ 02_기능/                MVP 기능 및 보안 기준
+├─ migrations/             Alembic DB 변경 이력
 ├─ src/suit_backend/       실행 코드
 │  ├─ routers/             HTTP API
 │  ├─ models.py            DB 모델
@@ -27,6 +28,7 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
 Copy-Item .env.example .env
+alembic upgrade head
 uvicorn suit_backend.main:app --reload
 ```
 
@@ -34,7 +36,7 @@ uvicorn suit_backend.main:app --reload
 - 상태 확인: `GET http://127.0.0.1:8000/health`
 - 최초 관리자 생성: `POST /api/v1/auth/bootstrap`
 
-`bootstrap`은 사용자 테이블이 비어 있을 때 한 번만 성공합니다. 운영 배포 후 최초 관리자 생성을 완료하면 해당 엔드포인트에 대한 네트워크 접근도 차단하는 것을 권장합니다.
+`bootstrap`은 기본적으로 비활성화되어 있습니다. 최초 설정 시에만 `SUIT_BOOTSTRAP_ENABLED=true`와 별도의 32자 이상 무작위 `SUIT_BOOTSTRAP_TOKEN`을 설정하고, 요청에 `X-Bootstrap-Token` 헤더를 넣으세요. 첫 관리자 생성 직후 다시 `false`로 바꾸고 재배포해야 합니다.
 
 ## 환경변수
 
@@ -44,6 +46,7 @@ uvicorn suit_backend.main:app --reload
 SUIT_ENV=production
 SUIT_DATABASE_URL=postgresql+psycopg://...
 SUIT_JWT_SECRET=32자 이상의 무작위 비밀값
+SUIT_BOOTSTRAP_ENABLED=false
 SUIT_CORS_ORIGINS=["https://suit-woad.vercel.app"]
 SUIT_ALLOWED_HOSTS=["api.suit.example.com"]
 ```
@@ -52,7 +55,9 @@ SUIT_ALLOWED_HOSTS=["api.suit.example.com"]
 
 ## 인증 사용 원칙
 
-현재 MVP는 짧은 수명의 Bearer access token을 사용합니다. 브라우저에서는 토큰을 메모리에만 보관하고 `localStorage`에 저장하지 마세요. 운영 단계에서는 OIDC 공급자 또는 HttpOnly 쿠키 기반 BFF로 전환하는 것을 권장합니다.
+현재 MVP는 최대 30분의 Bearer access token을 사용합니다. 토큰마다 `jti`와 사용자 인증 버전이 들어가므로 역할 변경·계정 비활성화 시 기존 토큰이 즉시 거부됩니다. 브라우저에서는 토큰을 메모리에만 보관하고 `localStorage`에 저장하지 마세요. 운영 단계에서는 OIDC 공급자 또는 HttpOnly 쿠키 기반 BFF로 전환하는 것을 권장합니다.
+
+직원 추가는 관리자가 임시 비밀번호를 정하는 방식보다 `POST /api/v1/admin/invitations`로 일회용 초대 토큰을 발급하는 방식을 사용합니다. 토큰 원문은 응답에서 한 번만 노출되고 DB에는 SHA-256 해시만 저장됩니다. 비밀번호 변경과 로그아웃은 인증 버전을 올려 기존 access token을 즉시 무효화합니다.
 
 ## 데이터 보관
 
@@ -68,7 +73,10 @@ SUIT_ALLOWED_HOSTS=["api.suit.example.com"]
 ```powershell
 pytest
 ruff check .
+bandit -q -r src
+pip-audit .
+python scripts/check_secrets.py
 ```
 
-프로덕션에서는 `create_all` 대신 Alembic 마이그레이션, Redis 기반 분산 rate limit, 관리형 PostgreSQL 백업 및 복구 테스트가 추가로 필요합니다.
+GitHub Actions는 테스트·린트·정적 보안 분석·의존성 취약점·비밀키 패턴을 자동 검사하며 Dependabot이 Python, Docker, Actions 업데이트를 매주 확인합니다. 프로덕션 시작 시에는 반드시 `alembic upgrade head`를 먼저 실행합니다. `compose.yaml`은 별도 `migrate` 서비스가 성공한 뒤 API를 시작합니다. 여러 API 인스턴스로 확장할 때는 현재 프로세스별 rate limit을 Redis 기반 분산 제한으로 바꾸고, 관리형 PostgreSQL 백업·복구 훈련을 추가해야 합니다.
 

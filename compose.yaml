@@ -20,14 +20,44 @@ services:
       SUIT_ENV: production
       SUIT_DATABASE_URL: postgresql+psycopg://suit:${POSTGRES_PASSWORD}@db:5432/suit
       SUIT_JWT_SECRET: ${SUIT_JWT_SECRET:?set SUIT_JWT_SECRET}
+      SUIT_BOOTSTRAP_ENABLED: ${SUIT_BOOTSTRAP_ENABLED:-false}
+      SUIT_BOOTSTRAP_TOKEN: ${SUIT_BOOTSTRAP_TOKEN:-}
       SUIT_CORS_ORIGINS: ${SUIT_CORS_ORIGINS:-["https://suit-woad.vercel.app"]}
       SUIT_ALLOWED_HOSTS: ${SUIT_ALLOWED_HOSTS:-["api.example.com"]}
     depends_on:
       db:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "8000:8000"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     restart: unless-stopped
+
+  migrate:
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      SUIT_ENV: production
+      SUIT_DATABASE_URL: postgresql+psycopg://suit:${POSTGRES_PASSWORD}@db:5432/suit
+      SUIT_JWT_SECRET: ${SUIT_JWT_SECRET:?set SUIT_JWT_SECRET}
+      SUIT_CORS_ORIGINS: ${SUIT_CORS_ORIGINS:-["https://suit-woad.vercel.app"]}
+      SUIT_ALLOWED_HOSTS: ${SUIT_ALLOWED_HOSTS:-["api.example.com"]}
+    depends_on:
+      db:
+        condition: service_healthy
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: "no"
 
 volumes:
   suit_postgres:

@@ -1,4 +1,8 @@
+import pytest
 from conftest import ASGITestClient
+from pydantic import SecretStr
+
+from suit_backend.config import Settings, get_settings
 
 
 def test_health_and_security_headers(client: ASGITestClient):
@@ -17,7 +21,7 @@ def test_bootstrap_is_one_time_and_login_works(client: ASGITestClient, admin_tok
             "organization_name": "다른 기관",
             "email": "other@example.com",
             "full_name": "다른 관리자",
-            "password": "another-secure-password",
+            "password": "independent-secure-passphrase",
         },
     )
     assert second.status_code == 409
@@ -36,6 +40,42 @@ def test_bootstrap_is_one_time_and_login_works(client: ASGITestClient, admin_tok
     assert login.json()["token_type"] == "bearer"
 
 
+def test_bootstrap_requires_configured_token(client: ASGITestClient):
+    settings = get_settings()
+    original = settings.bootstrap_token
+    settings.bootstrap_token = SecretStr("bootstrap-token-that-is-long-and-independent")
+    payload = {
+        "organization_name": "보안 테스트 기관",
+        "email": "secure-admin@example.com",
+        "full_name": "보안 관리자",
+        "password": "correct-horse-battery-staple",
+    }
+    try:
+        denied = client.post("/api/v1/auth/bootstrap", json=payload)
+        assert denied.status_code == 403
+        allowed = client.post(
+            "/api/v1/auth/bootstrap",
+            headers={"X-Bootstrap-Token": settings.bootstrap_token.get_secret_value()},
+            json=payload,
+        )
+        assert allowed.status_code == 201
+    finally:
+        settings.bootstrap_token = original
+
+
+def test_weak_password_is_rejected(client: ASGITestClient):
+    response = client.post(
+        "/api/v1/auth/bootstrap",
+        json={
+            "organization_name": "테스트 기관",
+            "email": "admin@example.com",
+            "full_name": "테스트 관리자",
+            "password": "password1234",
+        },
+    )
+    assert response.status_code == 422
+
+
 def test_admin_user_and_role_enforcement(client: ASGITestClient, auth: dict[str, str]):
     created = client.post(
         "/api/v1/admin/users",
@@ -43,7 +83,7 @@ def test_admin_user_and_role_enforcement(client: ASGITestClient, auth: dict[str,
         json={
             "email": "staff@example.com",
             "full_name": "현장 직원",
-            "password": "safe-staff-password-123",
+            "password": "independent-field-passphrase",
             "role": "staff",
         },
     )
@@ -51,7 +91,7 @@ def test_admin_user_and_role_enforcement(client: ASGITestClient, auth: dict[str,
 
     login = client.post(
         "/api/v1/auth/login",
-        json={"email": "staff@example.com", "password": "safe-staff-password-123"},
+        json={"email": "staff@example.com", "password": "independent-field-passphrase"},
     )
     staff_auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
     denied = client.get("/api/v1/admin/users", headers=staff_auth)
@@ -64,6 +104,33 @@ def test_admin_user_and_role_enforcement(client: ASGITestClient, auth: dict[str,
         json={"role": "staff"},
     )
     assert last_admin.status_code == 409
+
+
+def test_role_or_status_change_revokes_existing_token(
+    client: ASGITestClient, auth: dict[str, str]
+):
+    created = client.post(
+        "/api/v1/admin/users",
+        headers=auth,
+        json={
+            "email": "revoke@example.com",
+            "full_name": "권한 변경 직원",
+            "password": "long-passphrase-for-revocation",
+            "role": "staff",
+        },
+    )
+    user_id = created.json()["id"]
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"email": "revoke@example.com", "password": "long-passphrase-for-revocation"},
+    )
+    staff_auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    assert client.get("/api/v1/auth/me", headers=staff_auth).status_code == 200
+    disabled = client.patch(
+        f"/api/v1/admin/users/{user_id}", headers=auth, json={"is_active": False}
+    )
+    assert disabled.status_code == 200
+    assert client.get("/api/v1/auth/me", headers=staff_auth).status_code == 401
 
 
 def test_staff_cannot_read_another_staff_conversation(
@@ -177,3 +244,176 @@ def test_recognition_fails_closed_without_provider(
     response = client.post("/api/v1/recognition/sign", headers=auth)
     assert response.status_code == 503
     assert response.json()["detail"]["code"] == "PROVIDER_NOT_CONFIGURED"
+
+
+def test_streamed_body_limit_cannot_be_bypassed(client: ASGITestClient):
+    async def oversized_chunks():
+        yield b"{" + (b"x" * 700_000)
+        yield b"x" * 700_000 + b"}"
+
+    response = client.post(
+        "/api/v1/auth/login",
+        headers={"Content-Type": "application/json"},
+        content=oversized_chunks(),
+    )
+    assert response.status_code == 413
+
+
+def test_unsafe_production_configuration_is_rejected():
+    settings = Settings(
+        env="production",
+        database_url="sqlite:///./unsafe.db",
+        jwt_secret="short",
+        access_token_minutes=60,
+        cors_origins=["http://localhost:5173"],
+        allowed_hosts=["localhost"],
+    )
+    with pytest.raises(RuntimeError, match="Unsafe production configuration"):
+        settings.validate_runtime_security()
+
+
+def test_preferences_and_organization_default_retention(
+    client: ASGITestClient, auth: dict[str, str]
+):
+    defaults = client.get("/api/v1/preferences", headers=auth)
+    assert defaults.status_code == 200
+    assert defaults.json()["confidence_threshold"] == 80
+
+    updated = client.patch(
+        "/api/v1/preferences",
+        headers=auth,
+        json={"text_size": "large", "confidence_threshold": 91},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["text_size"] == "large"
+
+    organization = client.patch(
+        "/api/v1/admin/organization-settings",
+        headers=auth,
+        json={"default_retention": "7d"},
+    )
+    assert organization.status_code == 200
+    created = client.post(
+        "/api/v1/conversations",
+        headers=auth,
+        json={"scenario_id": "hospital"},
+    )
+    assert created.status_code == 201
+    assert created.json()["retention"] == "7d"
+
+
+def test_invitation_acceptance_logout_and_password_change(
+    client: ASGITestClient, auth: dict[str, str]
+):
+    invitation = client.post(
+        "/api/v1/admin/invitations",
+        headers=auth,
+        json={"email": "invited@example.com", "role": "staff"},
+    )
+    assert invitation.status_code == 201, invitation.text
+    accepted = client.post(
+        "/api/v1/auth/invitations/accept",
+        json={
+            "token": invitation.json()["token"],
+            "full_name": "초대 직원",
+            "password": "field-team-secure-passphrase",
+        },
+    )
+    assert accepted.status_code == 201, accepted.text
+    staff_auth = {"Authorization": f"Bearer {accepted.json()['access_token']}"}
+    assert client.get("/api/v1/auth/me", headers=staff_auth).status_code == 200
+
+    replay = client.post(
+        "/api/v1/auth/invitations/accept",
+        json={
+            "token": invitation.json()["token"],
+            "full_name": "재사용",
+            "password": "another-secure-user-passphrase",
+        },
+    )
+    assert replay.status_code == 400
+
+    changed = client.post(
+        "/api/v1/auth/password/change",
+        headers=staff_auth,
+        json={
+            "current_password": "field-team-secure-passphrase",
+            "new_password": "replacement-secure-passphrase",
+        },
+    )
+    assert changed.status_code == 204
+    assert client.get("/api/v1/auth/me", headers=staff_auth).status_code == 401
+
+    login = client.post(
+        "/api/v1/auth/login",
+        json={"email": "invited@example.com", "password": "replacement-secure-passphrase"},
+    )
+    new_auth = {"Authorization": f"Bearer {login.json()['access_token']}"}
+    assert client.post("/api/v1/auth/logout", headers=new_auth).status_code == 204
+    assert client.get("/api/v1/auth/me", headers=new_auth).status_code == 401
+
+
+def test_idempotency_prevents_duplicate_writes(
+    client: ASGITestClient, auth: dict[str, str]
+):
+    headers = {**auth, "Idempotency-Key": "conversation-request-001"}
+    payload = {"scenario_id": "hospital", "retention": "24h"}
+    first = client.post("/api/v1/conversations", headers=headers, json=payload)
+    second = client.post("/api/v1/conversations", headers=headers, json=payload)
+    assert first.status_code == 201
+    assert second.status_code == 201
+    assert second.json()["id"] == first.json()["id"]
+
+    conflict = client.post(
+        "/api/v1/conversations",
+        headers=headers,
+        json={"scenario_id": "public", "retention": "24h"},
+    )
+    assert conflict.status_code == 409
+
+    message_headers = {**auth, "Idempotency-Key": "message-request-001"}
+    message_payload = {"mode": "text", "text": "중복 저장 방지"}
+    path = f"/api/v1/conversations/{first.json()['id']}/messages"
+    message_one = client.post(path, headers=message_headers, json=message_payload)
+    message_two = client.post(path, headers=message_headers, json=message_payload)
+    assert message_one.status_code == 201
+    assert message_two.json()["id"] == message_one.json()["id"]
+
+
+def test_conversation_search_filters_and_cursor_pagination(
+    client: ASGITestClient, auth: dict[str, str]
+):
+    created_ids = []
+    for index in range(3):
+        conversation = client.post(
+            "/api/v1/conversations",
+            headers=auth,
+            json={"scenario_id": "hospital", "retention": "24h"},
+        )
+        created_ids.append(conversation.json()["id"])
+        client.post(
+            f"/api/v1/conversations/{conversation.json()['id']}/messages",
+            headers=auth,
+            json={"mode": "text", "text": f"검색 문구 {index}"},
+        )
+
+    client.patch(
+        f"/api/v1/conversations/{created_ids[0]}",
+        headers=auth,
+        json={"bookmarked": True},
+    )
+    searched = client.get("/api/v1/conversations?query=문구+1", headers=auth)
+    assert searched.status_code == 200
+    assert searched.json()["page"]["total"] == 1
+    assert searched.json()["items"][0]["id"] == created_ids[1]
+
+    bookmarked = client.get("/api/v1/conversations?bookmarked=true", headers=auth)
+    assert bookmarked.json()["page"]["total"] == 1
+    first_page = client.get("/api/v1/conversations?limit=2", headers=auth).json()
+    assert first_page["page"]["count"] == 2
+    assert first_page["page"]["total"] == 3
+    assert first_page["page"]["next_cursor"]
+    cursor = first_page["page"]["next_cursor"]
+    second_page = client.get(f"/api/v1/conversations?limit=2&cursor={cursor}", headers=auth)
+    assert second_page.status_code == 200
+    assert second_page.json()["page"]["count"] == 1

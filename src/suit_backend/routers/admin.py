@@ -1,11 +1,16 @@
+import secrets
+from datetime import UTC, datetime, timedelta
+
 from fastapi import APIRouter, HTTPException, Query, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 
 from suit_backend.deps import AdminUser, DBSession
-from suit_backend.models import AuditLog, Phrase, Role, Scenario, User
+from suit_backend.models import AuditLog, Invitation, Phrase, Role, Scenario, User
 from suit_backend.schemas import (
     AuditResponse,
+    InvitationCreate,
+    InvitationCreated,
     PhraseCreate,
     PhraseResponse,
     PhraseUpdate,
@@ -13,10 +18,56 @@ from suit_backend.schemas import (
     UserResponse,
     UserUpdate,
 )
-from suit_backend.security import hash_password, normalize_email
+from suit_backend.security import hash_one_time_token, hash_password, normalize_email
 from suit_backend.services import audit
 
 router = APIRouter(prefix="/admin", tags=["admin"])
+
+
+@router.post("/invitations", response_model=InvitationCreated, status_code=201)
+def create_invitation(
+    payload: InvitationCreate, admin: AdminUser, db: DBSession
+) -> InvitationCreated:
+    email = normalize_email(str(payload.email))
+    if db.scalar(select(User.id).where(User.email == email)):
+        raise HTTPException(status_code=409, detail="Email is already registered")
+    if db.scalar(
+        select(Invitation.id).where(
+            Invitation.organization_id == admin.organization_id,
+            Invitation.email == email,
+            Invitation.accepted_at.is_(None),
+            Invitation.expires_at > datetime.now(UTC),
+        )
+    ):
+        raise HTTPException(status_code=409, detail="An active invitation already exists")
+    raw_token = secrets.token_urlsafe(32)
+    invitation = Invitation(
+        organization_id=admin.organization_id,
+        email=email,
+        role=payload.role,
+        token_hash=hash_one_time_token(raw_token),
+        created_by_id=admin.id,
+        expires_at=datetime.now(UTC) + timedelta(hours=payload.expires_hours),
+    )
+    db.add(invitation)
+    db.flush()
+    audit(
+        db,
+        actor=admin,
+        action="invitation.create",
+        resource_type="invitation",
+        resource_id=invitation.id,
+        metadata={"role": invitation.role.value},
+    )
+    db.commit()
+    db.refresh(invitation)
+    return InvitationCreated(
+        id=invitation.id,
+        email=invitation.email,
+        role=invitation.role,
+        expires_at=invitation.expires_at,
+        token=raw_token,
+    )
 
 
 @router.get("/users", response_model=list[UserResponse])
@@ -30,7 +81,12 @@ def list_users(admin: AdminUser, db: DBSession) -> list[User]:
     )
 
 
-@router.post("/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/users",
+    response_model=UserResponse,
+    status_code=status.HTTP_201_CREATED,
+    deprecated=True,
+)
 def create_user(payload: UserCreate, admin: AdminUser, db: DBSession) -> User:
     user = User(
         organization_id=admin.organization_id,
@@ -90,6 +146,8 @@ def update_user(user_id: str, payload: UserUpdate, admin: AdminUser, db: DBSessi
             )
     for key, value in changes.items():
         setattr(user, key, value)
+    if "role" in changes or "is_active" in changes:
+        user.auth_version += 1
     audit(
         db,
         actor=admin,

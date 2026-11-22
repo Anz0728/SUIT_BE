@@ -33,6 +33,7 @@ def get_current_user(
         or not user.is_active
         or user.organization_id != payload["org"]
         or user.role.value != payload["role"]
+        or user.auth_version != payload["ver"]
     ):
         raise unauthorized
     return user

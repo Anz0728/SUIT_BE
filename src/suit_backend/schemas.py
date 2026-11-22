@@ -1,8 +1,10 @@
 from datetime import datetime
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from .models import ConversationStatus, MessageMode, Retention, Role
+from .security import password_policy_error
 
 
 class APIModel(BaseModel):
@@ -19,6 +21,12 @@ class BootstrapRequest(APIModel):
     email: EmailStr
     full_name: str = Field(min_length=2, max_length=80)
     password: str = Field(min_length=12, max_length=128)
+
+    @model_validator(mode="after")
+    def strong_password(self) -> Self:
+        if error := password_policy_error(self.password, str(self.email)):
+            raise ValueError(error)
+        return self
 
 
 class LoginRequest(APIModel):
@@ -57,10 +65,85 @@ class UserCreate(APIModel):
     password: str = Field(min_length=12, max_length=128)
     role: Role = Role.STAFF
 
+    @model_validator(mode="after")
+    def strong_password(self) -> Self:
+        if error := password_policy_error(self.password, str(self.email)):
+            raise ValueError(error)
+        return self
+
 
 class UserUpdate(APIModel):
     role: Role | None = None
     is_active: bool | None = None
+
+
+class InvitationCreate(APIModel):
+    email: EmailStr
+    role: Role = Role.STAFF
+    expires_hours: int = Field(default=24, ge=1, le=168)
+
+
+class InvitationCreated(APIModel):
+    id: str
+    email: EmailStr
+    role: Role
+    expires_at: datetime
+    token: str
+
+
+class InvitationAccept(APIModel):
+    token: str = Field(min_length=32, max_length=256)
+    full_name: str = Field(min_length=2, max_length=80)
+    password: str = Field(min_length=12, max_length=128)
+
+
+class PasswordChange(APIModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=12, max_length=128)
+
+
+class UserPreferenceUpdate(APIModel):
+    text_size: Literal["normal", "large", "extra"] | None = None
+    language: Literal["ko", "en", "both"] | None = None
+    speech: bool | None = None
+    face_tracking: bool | None = None
+    pose_tracking: bool | None = None
+    spatial_tracking: bool | None = None
+    confidence_alert: bool | None = None
+    confidence_threshold: int | None = Field(default=None, ge=50, le=99)
+    ksl_english: bool | None = None
+    haptics: bool | None = None
+    high_contrast: bool | None = None
+    voice_tone: Literal["clear", "calm"] | None = None
+    speech_rate: Literal[0.7, 0.9, 1.2] | None = None
+
+
+class UserPreferenceResponse(APIModel):
+    user_id: str
+    text_size: str
+    language: str
+    speech: bool
+    face_tracking: bool
+    pose_tracking: bool
+    spatial_tracking: bool
+    confidence_alert: bool
+    confidence_threshold: int
+    ksl_english: bool
+    haptics: bool
+    high_contrast: bool
+    voice_tone: str
+    speech_rate: float
+    updated_at: datetime
+
+
+class OrganizationSettingUpdate(APIModel):
+    default_retention: Retention | None = None
+
+
+class OrganizationSettingResponse(APIModel):
+    organization_id: str
+    default_retention: Retention
+    updated_at: datetime
 
 
 class ScenarioResponse(APIModel):
@@ -99,7 +182,7 @@ class PhraseResponse(APIModel):
 
 class ConversationCreate(APIModel):
     scenario_id: str = Field(min_length=1, max_length=40)
-    retention: Retention = Retention.HOURS_24
+    retention: Retention | None = None
 
 
 class ConversationUpdate(APIModel):
@@ -153,8 +236,10 @@ class ConversationResponse(APIModel):
 
 class PageInfo(APIModel):
     limit: int
-    offset: int
     count: int
+    total: int
+    next_cursor: str | None = None
+    offset: int | None = None
 
 
 class ConversationList(APIModel):

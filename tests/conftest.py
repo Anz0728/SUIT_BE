@@ -7,6 +7,8 @@ TEST_DB = Path(__file__).parent / "test_suit.sqlite3"
 os.environ["SUIT_ENV"] = "test"
 os.environ["SUIT_DATABASE_URL"] = f"sqlite:///{TEST_DB.as_posix()}"
 os.environ["SUIT_JWT_SECRET"] = "test-secret-that-is-long-enough-for-suit-tests"
+os.environ["SUIT_BOOTSTRAP_ENABLED"] = "true"
+os.environ["SUIT_RATE_LIMIT_ENABLED"] = "false"
 os.environ["SUIT_ALLOWED_HOSTS"] = '["testserver"]'
 
 if sys.platform == "win32":
