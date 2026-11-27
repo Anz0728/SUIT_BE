@@ -38,6 +38,16 @@ uvicorn suit_backend.main:app --reload
 
 `bootstrap`은 기본적으로 비활성화되어 있습니다. 최초 설정 시에만 `SUIT_BOOTSTRAP_ENABLED=true`와 별도의 32자 이상 무작위 `SUIT_BOOTSTRAP_TOKEN`을 설정하고, 요청에 `X-Bootstrap-Token` 헤더를 넣으세요. 첫 관리자 생성 직후 다시 `false`로 바꾸고 재배포해야 합니다.
 
+## 생활 지원 확장 API
+
+- `POST /api/v1/extensions/environment/analyze` — 이미지 원본을 받거나 저장하지 않고, OCR로 추출된 글자를 메뉴판·안내문·키오스크·설명서 유형에 맞춰 요약합니다.
+- `POST /api/v1/extensions/sense/classify` — 음성 받아쓰기 문장을 초인종/노크, 이름 호출, 안내 방송, 경보/경적으로 분류합니다. 응답에는 항상 안전 보조 기능 고지가 포함됩니다.
+- `POST /api/v1/connect/rooms` — 인증 사용자가 만료 시간이 있는 링크 대화방을 만듭니다.
+- `GET /api/v1/connect/rooms/{room_id}?token=...` — 설치하지 않은 참여자가 방의 변환 문장을 조회합니다.
+- `POST /api/v1/connect/rooms/{room_id}/messages?token=...` — 수어→음성, 음성→수어, 문자 메시지를 추가합니다.
+
+Connect 방은 현재 단일 프로세스 메모리에 최대 200개 메시지를 보관하고 만료 시 제거하는 MVP입니다. 다중 인스턴스 배포 전 Redis 또는 데이터베이스 저장소로 교체해야 합니다. 서버는 원본 사진·영상·음성을 보관하지 않습니다.
+
 ## 환경변수
 
 운영 환경에서는 다음 값을 반드시 배포 서비스의 Secret으로 설정합니다.

@@ -22,6 +22,15 @@ class BodySizeLimitMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        # Requests with a declared size are rejected by RequestGuardMiddleware. Avoid
+        # pre-consuming those bodies here because BaseHTTPMiddleware expects to own
+        # the receive stream on recent Starlette versions. This buffer is only for
+        # genuinely streamed/chunked bodies where Content-Length is absent.
+        headers = dict(scope.get("headers", []))
+        method = scope.get("method", "GET").upper()
+        if b"content-length" in headers or method in {"GET", "HEAD", "OPTIONS"}:
+            await self.app(scope, receive, send)
+            return
         limit = get_settings().max_request_bytes
         buffered: list[Message] = []
         received = 0

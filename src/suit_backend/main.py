@@ -15,7 +15,7 @@ from .middleware import (
     RequestGuardMiddleware,
     SecurityHeadersMiddleware,
 )
-from .routers import admin, auth, conversations, health, recognition, scenarios
+from .routers import admin, auth, conversations, extensions, health, recognition, scenarios
 from .routers import settings as settings_router
 from .seed import seed_reference_data
 from .services import cleanup_maintenance
@@ -83,3 +83,4 @@ app.include_router(conversations.router, prefix=settings.api_prefix)
 app.include_router(admin.router, prefix=settings.api_prefix)
 app.include_router(settings_router.router, prefix=settings.api_prefix)
 app.include_router(recognition.router, prefix=settings.api_prefix)
+app.include_router(extensions.router, prefix=settings.api_prefix)

@@ -252,6 +252,73 @@ class RecognitionUnavailable(APIModel):
     message: str
 
 
+class EnvironmentAnalyzeRequest(APIModel):
+    kind: Literal["menu", "notice", "kiosk", "manual"]
+    extracted_text: str = Field(min_length=1, max_length=5000)
+
+
+class EnvironmentAnalyzeResponse(APIModel):
+    kind: str
+    title: str
+    summary: str
+    steps: list[str]
+    ksl_gloss: str
+    source: str = "text_rules"
+    media_stored: bool = False
+
+
+class SoundClassifyRequest(APIModel):
+    transcript: str = Field(min_length=1, max_length=1000)
+    wake_name: str = Field(default="", max_length=80)
+
+
+class SoundClassifyResponse(APIModel):
+    event_type: Literal["door", "name", "broadcast", "danger", "unknown"]
+    label: str
+    urgency: Literal["normal", "attention", "urgent"]
+    should_vibrate: bool
+    safety_notice: str
+
+
+class ConnectRoomCreate(APIModel):
+    expires_minutes: int = Field(default=60, ge=10, le=1440)
+
+
+class ConnectRoomCreated(APIModel):
+    id: str
+    guest_token: str
+    expires_at: datetime
+    polling_path: str
+
+
+class ConnectMessageCreate(APIModel):
+    sender: Literal["host", "guest"]
+    mode: Literal["sign_to_voice", "voice_to_sign", "text"]
+    text: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("text")
+    @classmethod
+    def printable_connect_text(cls, value: str) -> str:
+        if not any(character.isprintable() and not character.isspace() for character in value):
+            raise ValueError("Message must contain printable text")
+        return value
+
+
+class ConnectMessageResponse(APIModel):
+    id: str
+    sender: str
+    mode: str
+    text: str
+    ksl_tokens: list[str]
+    created_at: datetime
+
+
+class ConnectRoomResponse(APIModel):
+    id: str
+    expires_at: datetime
+    messages: list[ConnectMessageResponse]
+
+
 class AuditResponse(APIModel):
     id: str
     actor_id: str

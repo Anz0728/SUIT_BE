@@ -246,6 +246,57 @@ def test_recognition_fails_closed_without_provider(
     assert response.json()["detail"]["code"] == "PROVIDER_NOT_CONFIGURED"
 
 
+def test_environment_and_sense_extensions(client: ASGITestClient, auth: dict[str, str]):
+    environment = client.post(
+        "/api/v1/extensions/environment/analyze",
+        headers=auth,
+        json={
+            "kind": "kiosk",
+            "extracted_text": "1. 메뉴 선택 2. 옵션 선택 3. 결제 수단 선택",
+        },
+    )
+    assert environment.status_code == 200, environment.text
+    assert environment.json()["title"] == "키오스크"
+    assert len(environment.json()["steps"]) == 3
+    assert environment.json()["media_stored"] is False
+
+    sound = client.post(
+        "/api/v1/extensions/sense/classify",
+        headers=auth,
+        json={"transcript": "수진 님 택배가 문 앞에 있습니다", "wake_name": "수진"},
+    )
+    assert sound.status_code == 200
+    assert sound.json()["event_type"] == "name"
+    assert sound.json()["should_vibrate"] is True
+
+
+def test_connect_room_guest_flow(client: ASGITestClient, auth: dict[str, str]):
+    created = client.post(
+        "/api/v1/connect/rooms", headers=auth, json={"expires_minutes": 30}
+    )
+    assert created.status_code == 201, created.text
+    room = created.json()
+    path = f"/api/v1/connect/rooms/{room['id']}"
+
+    denied = client.get(f"{path}?token={'x' * 24}")
+    assert denied.status_code == 404
+
+    message = client.post(
+        f"{path}/messages?token={room['guest_token']}",
+        json={
+            "sender": "guest",
+            "mode": "voice_to_sign",
+            "text": "오후 두 시에 다시 연락드릴게요.",
+        },
+    )
+    assert message.status_code == 201, message.text
+    assert "오후" in message.json()["ksl_tokens"]
+
+    detail = client.get(f"{path}?token={room['guest_token']}")
+    assert detail.status_code == 200
+    assert len(detail.json()["messages"]) == 1
+
+
 def test_streamed_body_limit_cannot_be_bypassed(client: ASGITestClient):
     async def oversized_chunks():
         yield b"{" + (b"x" * 700_000)
